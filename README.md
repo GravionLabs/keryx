@@ -25,4 +25,4 @@ pnpm run check   # build, typecheck, lint, test
 
 See [AGENTS.md](AGENTS.md) for the repository conventions. Licensed under [MIT](LICENSE).
 
-Status: planning. See the Epic in the issues.
+Status: in development, no release yet. Order of work and releases: [ROADMAP.md](ROADMAP.md).
