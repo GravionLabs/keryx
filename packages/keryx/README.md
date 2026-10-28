@@ -18,6 +18,20 @@ keryx event session.idle --issue 4 --data '{"model":"x"}'   # post one event; ex
 
 The bus listens on loopback only and rejects a `Host` or `Origin` that is not loopback. The event shape is in [`schema/events.schema.json`](schema/events.schema.json) (`pnpm --filter @gravionlabs/keryx run schema` regenerates it).
 
+## Gates (`keryx mcp`)
+
+`keryx mcp` is a stdio MCP server, started per session by the harness (for example `{"command": "keryx", "args": ["mcp"]}`). It reports to `keryx serve` (same URL resolution as `keryx event`); without a running bus every tool fails with a message naming `keryx serve`.
+
+| Tool | |
+|:--|:--|
+| `run_gate` | runs the shell commands of the key `gate` in `<git toplevel>/.agents/config.json` itself, in order, stops at the first failure, and records `gate.finished` (commit, passed, failing command, tail of its output). Refuses without a `gate` key or with uncommitted changes and records nothing. |
+| `record_review` | records `review.recorded` for HEAD: `verdict` (`approve` or `changes`), optional `summary`, `findings` (`severity`, `file`, `line`, `summary`) |
+| `gate_state` | last gate result and last review verdict recorded for a commit (default HEAD); `open_pr` and `merge` decide on it |
+
+```json
+{ "gate": ["pnpm install --frozen-lockfile", "pnpm run check"] }
+```
+
 ## Configuration
 
 | | |

@@ -3,6 +3,7 @@ import { busUrl, ConfigError, loadConfig } from '../config.js';
 import { type RunningServe, reportStartupError, serve } from '../serve.js';
 import { keryxVersion } from '../version.js';
 import { runEventCommand } from './event.js';
+import { runMcpCommand } from './mcp.js';
 
 export interface CliHooks {
   /** Called with the running server after `serve` started (lets tests close it). */
@@ -53,6 +54,21 @@ export function buildProgram(
             { stderr: (t) => process.stderr.write(`${t}\n`) },
           ),
         );
+      } catch (error) {
+        if (!(error instanceof ConfigError)) throw error;
+        process.stderr.write(`keryx: ${error.message}\n`);
+        onResult(1);
+      }
+    });
+
+  program
+    .command('mcp')
+    .description(
+      'start the MCP server of this session on stdio (run_gate, record_review, gate_state)',
+    )
+    .action(async () => {
+      try {
+        await runMcpCommand({ busUrl: busUrl(), cwd: process.cwd() });
       } catch (error) {
         if (!(error instanceof ConfigError)) throw error;
         process.stderr.write(`keryx: ${error.message}\n`);
