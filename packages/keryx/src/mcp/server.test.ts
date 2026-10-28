@@ -50,10 +50,10 @@ async function call(client: Client, name: string, args: Record<string, unknown> 
 const events = () => db.listEventsSince(0);
 
 describe('tools', () => {
-  it('lists run_gate, record_review and gate_state', async () => {
+  it('lists the gate tools, open_pr and merge', async () => {
     const client = await connect(makeRepo(['true']));
     const names = (await client.listTools()).tools.map((t) => t.name).sort();
-    expect(names).toEqual(['gate_state', 'record_review', 'run_gate']);
+    expect(names).toEqual(['gate_state', 'merge', 'open_pr', 'record_review', 'run_gate']);
   });
 });
 

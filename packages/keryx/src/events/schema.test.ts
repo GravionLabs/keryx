@@ -31,6 +31,15 @@ describe('IngestEventSchema', () => {
   });
 });
 
+describe('PR lifecycle events', () => {
+  it.each(['pr.opened', 'ci.finished', 'pr.merged', 'pr.refused'])('accepts %s', (type) => {
+    expect(
+      IngestEventSchema.safeParse({ source: 'keryx-cli', type, issue: 20, data: { pr: 42 } })
+        .success,
+    ).toBe(true);
+  });
+});
+
 describe('BusEventSchema', () => {
   it('accepts a stored event', () => {
     const event = {

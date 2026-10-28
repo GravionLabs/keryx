@@ -31,6 +31,11 @@ export async function resolveCommit(cwd: string, ref = 'HEAD'): Promise<string> 
   return (await git(cwd, ['rev-parse', '--verify', `${ref}^{commit}`])).trim();
 }
 
+/** Name of the checked-out branch; `HEAD` when detached. */
+export async function currentBranch(cwd: string): Promise<string> {
+  return (await git(cwd, ['rev-parse', '--abbrev-ref', 'HEAD'])).trim();
+}
+
 /** Paths with uncommitted changes, untracked files included; empty for a clean worktree. */
 export async function dirtyPaths(cwd: string): Promise<string[]> {
   const out = await git(cwd, ['status', '--porcelain']);

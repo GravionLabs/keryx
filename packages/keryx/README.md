@@ -27,6 +27,10 @@ The bus listens on loopback only and rejects a `Host` or `Origin` that is not lo
 | `run_gate` | runs the shell commands of the key `gate` in `<git toplevel>/.agents/config.json` itself, in order, stops at the first failure, and records `gate.finished` (commit, passed, failing command, tail of its output). Refuses without a `gate` key or with uncommitted changes and records nothing. |
 | `record_review` | records `review.recorded` for HEAD: `verdict` (`approve` or `changes`), optional `summary`, `findings` (`severity`, `file`, `line`, `summary`) |
 | `gate_state` | last gate result and last review verdict recorded for a commit (default HEAD); `open_pr` and `merge` decide on it |
+| `open_pr` | `gh pr create` for the current branch into `base` (default `release/next`). Refuses unless HEAD has a passing `gate.finished` and an `approve` `review.recorded`; records `pr.opened` (PR number, branch, commit). |
+| `merge` | `gh pr merge --squash` for `pr`. Refuses unless HEAD is the gated and approved commit, is the head of the PR, and every required check is green (`gh pr checks --required`; none or pending also refuse). Records `ci.finished` (PR, passed, checks) when it read a finished result, then `pr.merged`. |
+
+Every refusal of `open_pr` and `merge` is recorded as `pr.refused` (`action`, `reason`, commit, PR). `gh` is called with an argument array; if it is missing or not authenticated the tool fails with a message saying so and nothing is recorded as passed. The lifecycle events `pr.opened`, `ci.finished`, `pr.merged` and `pr.refused` are plain bus events, so `keryx event pr.merged --issue 20 --data '{"pr":42}'` posts the same thing from `deliver`.
 
 ```json
 { "gate": ["pnpm install --frozen-lockfile", "pnpm run check"] }
