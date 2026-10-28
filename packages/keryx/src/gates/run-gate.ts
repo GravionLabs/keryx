@@ -31,7 +31,15 @@ interface Executed {
 
 function execute(command: string, cwd: string, timeoutMs: number): Promise<Executed> {
   return new Promise((resolve) => {
-    const child = spawn(command, { cwd, shell: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    // Own process group (POSIX), so a timeout can kill the command's children too; a child
+    // that outlives its shell would keep the output pipes open and the gate would hang.
+    const grouped = process.platform !== 'win32';
+    const child = spawn(command, {
+      cwd,
+      shell: true,
+      detached: grouped,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
     let tail = '';
     const keep = (chunk: Buffer): void => {
       tail = (tail + chunk.toString('utf8')).slice(-OUTPUT_TAIL_CHARS);
@@ -41,6 +49,14 @@ function execute(command: string, cwd: string, timeoutMs: number): Promise<Execu
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
+      if (grouped && child.pid !== undefined) {
+        try {
+          process.kill(-child.pid, 'SIGKILL');
+          return;
+        } catch {
+          // the group is already gone; fall through to the plain kill
+        }
+      }
       child.kill('SIGKILL');
     }, timeoutMs);
     child.on('error', (error) => {

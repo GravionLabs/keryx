@@ -48,7 +48,7 @@ describe('runGate', () => {
   });
 
   it('fails a command that runs over the timeout', async () => {
-    const dir = makeRepo(['sleep 5']);
+    const dir = makeRepo(['sleep 5; true']);
     const run = await runGate(dir, 100);
     expect(run).toMatchObject({
       outcome: { passed: false, commands: [{ exitCode: null }] },
