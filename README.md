@@ -9,4 +9,20 @@ Successor of the bus part of [dromos](https://github.com/GravionLabs/dromos) (ar
 - **Gates**: MCP tools that refuse to open or merge a PR without a green gate, for model-driven harnesses.
 - **herdr**: a plugin that shows per pane which session needs you.
 
+## Packages
+
+| Package | Purpose |
+|:--|:--|
+| [`@gravionlabs/keryx`](packages/keryx) | CLI and server (bin `keryx`) |
+| [`@gravionlabs/keryx-opencode`](packages/keryx-opencode) | OpenCode plugin, no server dependencies |
+
+## Development
+
+```sh
+pnpm install
+pnpm run check   # build, typecheck, lint, test
+```
+
+See [AGENTS.md](AGENTS.md) for the repository conventions. Licensed under [MIT](LICENSE).
+
 Status: planning. See the Epic in the issues.

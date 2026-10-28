@@ -1,0 +1,32 @@
+{
+  "name": "@gravionlabs/keryx-opencode",
+  "version": "0.1.0",
+  "description": "OpenCode plugin that reports session state to a local keryx bus",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "main": "dist/index.js",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "files": [
+    "dist/",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/GravionLabs/keryx.git",
+    "directory": "packages/keryx-opencode"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit"
+  }
+}
