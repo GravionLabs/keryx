@@ -11,6 +11,8 @@ packages/keryx-opencode/   @gravionlabs/keryx-opencode: OpenCode plugin, no serv
 .github/ISSUE_TEMPLATE/    epic, feature, pbi, task, bug (as in apm-hub)
 ```
 
+`packages/keryx/schema/events.schema.json` is generated from the zod schemas (`pnpm --filter @gravionlabs/keryx run schema`); CI fails on drift.
+
 TypeScript (strict, ESM, Node >= 22), pnpm workspace, Vitest, Biome. Unit tests sit next to the code as `<name>.test.ts`.
 
 ## Commands
