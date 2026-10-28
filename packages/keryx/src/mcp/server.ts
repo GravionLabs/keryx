@@ -2,6 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { ensureBus, postEvent } from '../gates/bus-client.js';
 import { resolveCommit, topLevel } from '../gates/git.js';
+import { mergePr, openPr } from '../gates/pr.js';
 import { runGate } from '../gates/run-gate.js';
 import { GATE_FINISHED, REVIEW_RECORDED, readGateState } from '../gates/state.js';
 import { keryxVersion } from '../version.js';
@@ -45,7 +46,7 @@ function guarded(deps: McpDeps, body: () => Promise<ToolResult>): () => Promise<
   };
 }
 
-/** The MCP server of one session: `run_gate`, `record_review` and `gate_state`. */
+/** The MCP server of one session: the gate tools and `open_pr` and `merge`, which need a green gate. */
 export function createMcpServer(deps: McpDeps): McpServer {
   const server = new McpServer({ name: 'keryx', version: keryxVersion() ?? 'unknown' });
 
@@ -110,6 +111,49 @@ export function createMcpServer(deps: McpDeps): McpServer {
       guarded(deps, async () => {
         const full = await resolveCommit(await topLevel(deps.cwd), commit);
         return ok(await readGateState(deps.busUrl, full));
+      })(),
+  );
+
+  const prContext = () => ({ busUrl: deps.busUrl, cwd: deps.cwd, source: MCP_SOURCE });
+
+  server.registerTool(
+    'open_pr',
+    {
+      description:
+        'Open a pull request for the current branch with `gh pr create`. Refuses unless HEAD has a passing gate result (run_gate) and an approving review (record_review). Records pr.opened, or pr.refused with the reason.',
+      inputSchema: {
+        title: z.string().min(1).max(256),
+        body: z.string().max(65000).optional(),
+        base: z
+          .string()
+          .min(1)
+          .max(200)
+          .optional()
+          .describe('Integration branch, default release/next'),
+        issue: z.number().int().positive().optional(),
+      },
+    },
+    async (input) =>
+      guarded(deps, async () => {
+        const run = await openPr(prContext(), input);
+        return 'refused' in run ? fail(run.refused) : ok(run.result);
+      })(),
+  );
+
+  server.registerTool(
+    'merge',
+    {
+      description:
+        'Squash-merge a pull request with `gh pr merge`. Refuses unless HEAD is the gated and approved commit, is the head of the PR, and every required check is green (gh pr checks --required). Records ci.finished and pr.merged, or pr.refused with the reason.',
+      inputSchema: {
+        pr: z.number().int().positive(),
+        issue: z.number().int().positive().optional(),
+      },
+    },
+    async (input) =>
+      guarded(deps, async () => {
+        const run = await mergePr(prContext(), input);
+        return 'refused' in run ? fail(run.refused) : ok(run.result);
       })(),
   );
 
