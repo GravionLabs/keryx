@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import type { z } from 'zod';
+import { type ApprovalsOptions, createApprovals } from './approvals.js';
 import {
   AckBodySchema,
   AnswerBodySchema,
@@ -34,6 +35,8 @@ export interface HttpOptions {
   maxEventStreams?: number;
   /** Live backlog in bytes after which a slow stream client is disconnected; defaults to 1 MiB. */
   maxStreamBufferedBytes?: number;
+  /** Tuning of the merge an approved `APPROVAL` attention runs; for tests. */
+  approvals?: Pick<ApprovalsOptions, 'cwd' | 'retryMs' | 'maxWaitMs'>;
 }
 
 export interface RunningHttp {
@@ -48,7 +51,7 @@ export const MAX_INGEST_BODY_BYTES = 1024 * 1024;
 export const MAX_INGEST_BATCH = 100;
 const ATTENTION_ACTION_PATH = /^\/attention\/([^/]+)\/(answer|ack)$/;
 /** Types the bus writes itself; `POST /ingest` refuses them so a producer cannot fake a state change. */
-const SERVER_OWNED_TYPE = /^attention\./;
+const SERVER_OWNED_TYPE = /^(attention|approval)\./;
 /** Body bytes discarded after a 413 before the connection is closed instead. */
 const MAX_DRAIN_BYTES = 8 * MAX_INGEST_BODY_BYTES;
 
@@ -149,6 +152,7 @@ export async function startHttp({
   heartbeatMs,
   maxEventStreams,
   maxStreamBufferedBytes,
+  approvals: approvalOptions,
 }: HttpOptions): Promise<RunningHttp> {
   const { host, port } = config;
   const eventStream = createEventStream({
@@ -295,6 +299,13 @@ export async function startHttp({
     }
   }
 
+  const approvals = createApprovals({
+    db,
+    publish,
+    log: (message) => log.logLine('APPROVAL', message),
+    ...approvalOptions,
+  });
+
   /** `POST /attention`: stores an open attention and records `attention.created`; 201 with the attention. */
   async function handleAttentionCreate(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const read = await readGuardedJson(req, res);
@@ -310,6 +321,7 @@ export async function startHttp({
       'ATTENTION',
       `attention ${attention.id} ${attention.kind} for #${attention.issue} open`,
     );
+    await approvals.onCreated(attention);
     sendJson(res, 201, attention);
   }
 
@@ -377,6 +389,11 @@ export async function startHttp({
     } else {
       publish(result.event);
       log.logLine('ATTENTION', `attention ${id} ${result.attention.state}`);
+      if (action === 'answer') {
+        approvals
+          .onAnswered(result.attention)
+          .catch((error) => log.logLine('ERROR', `approval of attention ${id}: ${String(error)}`));
+      }
       sendJson(res, 200, result.attention);
     }
   }
@@ -427,6 +444,7 @@ export async function startHttp({
     server,
     url: `http://${urlHost}:${address.port}`,
     async close() {
+      await approvals.close();
       server.closeAllConnections();
       await new Promise<void>((resolve, reject) => {
         server.close((error) => (error ? reject(error) : resolve()));

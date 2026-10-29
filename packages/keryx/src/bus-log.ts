@@ -1,7 +1,7 @@
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 
-export const LOG_KINDS = ['INGEST', 'ATTENTION', 'ERROR'] as const;
+export const LOG_KINDS = ['INGEST', 'ATTENTION', 'APPROVAL', 'ERROR'] as const;
 export type LogKind = (typeof LOG_KINDS)[number];
 
 export interface BusLog {
