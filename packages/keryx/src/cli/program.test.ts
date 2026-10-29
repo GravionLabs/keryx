@@ -91,3 +91,17 @@ describe('runCli', () => {
     );
   });
 });
+
+describe('runCli hook and install', () => {
+  it('keryx hook exits 0 silently when the bus is not running', async () => {
+    vi.stubEnv('KERYX_URL', 'http://127.0.0.1:1');
+    const out = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    expect(await runCli(['hook', 'Stop'])).toBe(0);
+    expect(out).not.toHaveBeenCalled();
+    expect(process.stderr.write).not.toHaveBeenCalled();
+  });
+
+  it('keryx install rejects an unknown harness', async () => {
+    expect(await runCli(['install', 'vim'])).toBe(2);
+  });
+});

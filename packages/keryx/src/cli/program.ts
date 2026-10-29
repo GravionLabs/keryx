@@ -3,6 +3,8 @@ import { busUrl, ConfigError, loadConfig } from '../config.js';
 import { type RunningServe, reportStartupError, serve } from '../serve.js';
 import { keryxVersion } from '../version.js';
 import { runEventCommand } from './event.js';
+import { runHookCommand } from './hook.js';
+import { InstallError, runInstallClaude } from './install.js';
 import { runMcpCommand } from './mcp.js';
 
 export interface CliHooks {
@@ -76,7 +78,55 @@ export function buildProgram(
       }
     });
 
+  program
+    .command('hook')
+    .description(
+      'report Claude Code session state from a hook (JSON on stdin); always exits 0, silently',
+    )
+    .argument('<event>', 'hook event, e.g. SessionStart, Stop')
+    .action(async (event: string) => {
+      onResult(
+        await runHookCommand(event, readStdin, busUrl, {
+          budgetMs: process.env.KERYX_HOOK_BUDGET_MS
+            ? Number(process.env.KERYX_HOOK_BUDGET_MS)
+            : undefined,
+        }),
+      );
+    });
+
+  program
+    .command('install')
+    .description('register the keryx hooks with a harness (claude)')
+    .argument('<harness>', 'claude')
+    .option('--project', 'write .claude/settings.json of the current directory')
+    .option('--uninstall', 'remove the keryx hooks only')
+    .action((harness: string, opts: { project?: boolean; uninstall?: boolean }) => {
+      if (harness !== 'claude') {
+        process.stderr.write(`keryx: unknown harness "${harness}" (supported: claude)\n`);
+        onResult(2);
+        return;
+      }
+      try {
+        const { path, changed } = runInstallClaude({ ...opts, cwd: process.cwd() });
+        const verb = opts.uninstall ? 'removed from' : 'installed in';
+        process.stdout.write(
+          changed ? `keryx hooks ${verb} ${path}\n` : `${path}: nothing to change\n`,
+        );
+      } catch (error) {
+        if (!(error instanceof InstallError)) throw error;
+        process.stderr.write(`keryx: ${error.message}\n`);
+        onResult(1);
+      }
+    });
+
   return program;
+}
+
+async function readStdin(): Promise<string> {
+  if (process.stdin.isTTY) return '';
+  const chunks: Buffer[] = [];
+  for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
+  return Buffer.concat(chunks).toString('utf8');
 }
 
 /** Runs the keryx CLI; resolves to the exit code once the command finished (`serve` resolves after startup). */
