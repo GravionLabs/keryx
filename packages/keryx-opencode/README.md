@@ -26,6 +26,10 @@ Add it to `opencode.json`:
 
 Events carry `source: "opencode"`, the session id as `agentId`, the issue number from a branch `<type>/<nr>-<slug>`, and `sessionId`, `cwd`, `branch`, `issue`, `herdrPaneId` in `data`.
 
+## Gate guard
+
+A `bash` call that runs `gh pr create` or `gh pr merge` is denied with a message naming the keryx MCP tool to use instead (`open_pr`, `merge`), so the model cannot bypass the gate. The guard looks at each command of a `&&`, `||`, `;`, `|` chain after leading `VAR=value` assignments; other `gh` calls pass.
+
 ## Bus address
 
 `KERYX_URL`, else `http://127.0.0.1:$KERYX_PORT`, else `http://127.0.0.1:4778`.

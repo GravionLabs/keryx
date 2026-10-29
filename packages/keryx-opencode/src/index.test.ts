@@ -1,7 +1,7 @@
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { issueFromBranch, KeryxPlugin, type OpenCodeEvent } from './index.js';
+import { gateToolFor, issueFromBranch, KeryxPlugin, type OpenCodeEvent } from './index.js';
 
 let server: Server | undefined;
 afterEach(() => {
@@ -170,5 +170,45 @@ describe('issueFromBranch', () => {
     expect(issueFromBranch('fix/123-x')).toBe(123);
     expect(issueFromBranch('main')).toBeUndefined();
     expect(issueFromBranch(undefined)).toBeUndefined();
+  });
+});
+
+describe('gate guard', () => {
+  it.each<[string, string | undefined]>([
+    ['gh pr create --title x', 'open_pr'],
+    ['gh pr merge 5 --squash', 'merge'],
+    ['GH_TOKEN=abc FOO=1 gh pr create', 'open_pr'],
+    ['git push && gh pr create -f', 'open_pr'],
+    ['pnpm check; gh pr merge 3', 'merge'],
+    ['echo done | gh pr merge', 'merge'],
+    ['git push\ngh pr create', 'open_pr'],
+    ['gh -R GravionLabs/keryx pr merge 4', 'merge'],
+    ['/usr/bin/gh pr create', 'open_pr'],
+    ['gh pr view 5', undefined],
+    ['gh pr list && gh issue create', undefined],
+    ['gh api repos/x/y/pulls', undefined],
+    ['echo "gh pr create"', undefined],
+    ['git commit -m "gh pr merge"', undefined],
+    ['ls', undefined],
+  ])('%j -> %s', (command, tool) => {
+    expect(gateToolFor(command)).toBe(tool);
+  });
+
+  it('denies a bash call with a message naming the MCP tool and lets others pass', async () => {
+    const hooks = await KeryxPlugin({ directory: '/w' }, { env: {}, branch });
+    const before = hooks['tool.execute.before'];
+    await expect(
+      before?.({ tool: 'bash' }, { args: { command: 'gh pr merge 1' } }),
+    ).rejects.toThrow(/keryx MCP tool merge/);
+    await expect(before?.({ tool: 'bash' }, { args: { command: 'gh pr create' } })).rejects.toThrow(
+      /open_pr/,
+    );
+    await expect(
+      before?.({ tool: 'bash' }, { args: { command: 'gh pr view' } }),
+    ).resolves.toBeUndefined();
+    await expect(
+      before?.({ tool: 'read' }, { args: { command: 'gh pr merge' } }),
+    ).resolves.toBeUndefined();
+    await expect(before?.({ tool: 'bash' }, {})).resolves.toBeUndefined();
   });
 });
