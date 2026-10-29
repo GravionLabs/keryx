@@ -4,7 +4,42 @@ Local event bus for Claude Code and OpenCode sessions. Part of [keryx](https://g
 
 ```sh
 keryx serve                                  # bus on 127.0.0.1:4778, in the foreground
+keryx install claude                         # register the Claude Code hooks
 keryx event session.idle --issue 4 --data '{"model":"x"}'   # post one event; exit 0 when keryx is not running
+```
+
+## Claude Code hooks
+
+```sh
+keryx install claude              # adds the hooks to ~/.claude/settings.json
+keryx install claude --project    # .claude/settings.json of the current directory
+keryx install claude --uninstall  # removes only the keryx entries
+```
+
+Installing is idempotent and leaves other hooks untouched. `keryx hook <event>` reads the hook JSON from stdin and posts the event (source `claude-code`, `agentId` the session id) with `sessionId`, `cwd`, `branch`, `issue` (from a branch `<type>/<nr>-<slug>`, else `null`) and `herdrPaneId` (`HERDR_PANE_ID`) in `data`. It always exits 0 without output, within 500 ms, also when keryx is not running.
+
+| Hook | Event |
+|:--|:--|
+| `SessionStart` | `session.started` |
+| `UserPromptSubmit` | `session.working` |
+| `Stop` | `session.idle` |
+| `Notification` | `session.waiting` |
+| `SubagentStop` | `subagent.finished` |
+| `SessionEnd` | `session.ended` |
+
+The same by hand, in `settings.json`:
+
+```json
+{
+  "hooks": {
+    "SessionStart": [{ "hooks": [{ "type": "command", "command": "keryx hook SessionStart" }] }],
+    "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "keryx hook UserPromptSubmit" }] }],
+    "Stop": [{ "hooks": [{ "type": "command", "command": "keryx hook Stop" }] }],
+    "Notification": [{ "hooks": [{ "type": "command", "command": "keryx hook Notification" }] }],
+    "SubagentStop": [{ "hooks": [{ "type": "command", "command": "keryx hook SubagentStop" }] }],
+    "SessionEnd": [{ "hooks": [{ "type": "command", "command": "keryx hook SessionEnd" }] }]
+  }
+}
 ```
 
 ## HTTP API
