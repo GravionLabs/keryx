@@ -12,6 +12,11 @@ export interface OpenCodeEvent {
 
 export interface KeryxPluginHooks {
   event?: (input: { event: OpenCodeEvent }) => Promise<void>;
+  /** Throws to deny the tool call. */
+  'tool.execute.before'?: (
+    input: { tool: string },
+    output: { args?: Record<string, unknown> },
+  ) => Promise<void>;
 }
 
 export interface PluginInput {
@@ -43,6 +48,56 @@ export function issueFromBranch(branch: string | undefined): number | undefined 
   if (!match?.[1]) return undefined;
   const nr = Number(match[1]);
   return Number.isSafeInteger(nr) && nr > 0 ? nr : undefined;
+}
+
+const GATE_TOOLS: Record<string, string> = { create: 'open_pr', merge: 'merge' };
+
+/** Splits a shell command at `&&`, `||`, `;`, `|`, `&` and newlines outside quotes. */
+function commandSegments(command: string): string[][] {
+  const segments: string[][] = [[]];
+  let word = '';
+  let quote: string | undefined;
+  const endWord = () => {
+    if (word !== '') segments[segments.length - 1]?.push(word);
+    word = '';
+  };
+  for (const ch of command) {
+    if (quote) {
+      if (ch === quote) quote = undefined;
+      else word += ch;
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+    } else if (/\s/.test(ch) && ch !== '\n') {
+      endWord();
+    } else if (ch === ';' || ch === '&' || ch === '|' || ch === '\n') {
+      endWord();
+      if (segments[segments.length - 1]?.length) segments.push([]);
+    } else {
+      word += ch;
+    }
+  }
+  endWord();
+  return segments.filter((s) => s.length > 0);
+}
+
+/**
+ * The gate tool that replaces `gh pr create` or `gh pr merge` in a shell command, if it
+ * contains one. Leading `VAR=value` assignments and global `gh` flags are skipped.
+ */
+export function gateToolFor(command: string): string | undefined {
+  for (const words of commandSegments(command)) {
+    let i = 0;
+    while (/^[A-Za-z_]\w*=/.test(words[i] ?? '')) i++;
+    if (!/(^|\/)gh$/.test(words[i] ?? '')) continue;
+    i++;
+    while (words[i]?.startsWith('-')) {
+      i += /^(-R|--repo|--hostname)$/.test(words[i] ?? '') ? 2 : 1;
+    }
+    if (words[i] !== 'pr') continue;
+    const tool = GATE_TOOLS[words[i + 1] ?? ''];
+    if (tool) return tool;
+  }
+  return undefined;
 }
 
 function str(value: unknown): string | undefined {
@@ -165,6 +220,16 @@ export const KeryxPlugin = async (
   }
 
   return {
+    'tool.execute.before': async ({ tool }, output) => {
+      const command = output.args?.command;
+      if (tool !== 'bash' || typeof command !== 'string') return;
+      const gate = gateToolFor(command);
+      if (gate) {
+        throw new Error(
+          `keryx: gh pr ${gate === 'merge' ? 'merge' : 'create'} is not allowed here, use the keryx MCP tool ${gate} (it checks the gate first)`,
+        );
+      }
+    },
     event: async ({ event }) => {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), deps.budgetMs ?? REPORT_BUDGET_MS);
