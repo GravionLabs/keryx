@@ -1,6 +1,12 @@
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import Database from 'better-sqlite3';
+import type {
+  AttentionQuery,
+  AttentionRecord,
+  AttentionState,
+  CreateAttention,
+} from './attention.js';
 import type { BusEvent, IngestEvent } from './events/schema.js';
 
 /** Applied in order; the index + 1 is the schema version stored in `PRAGMA user_version`. */
@@ -19,6 +25,27 @@ export const MIGRATIONS: readonly string[] = [
   CREATE INDEX idx_events_issue_id ON events(issue, id);
   CREATE INDEX idx_events_type_id ON events(type, id);
   CREATE INDEX idx_events_repo_id ON events(repo, id);
+  `,
+  `
+  CREATE TABLE attention (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL,
+    issue INTEGER NOT NULL,
+    repo TEXT,
+    agent_id TEXT,
+    summary TEXT NOT NULL,
+    options_json TEXT,
+    action_json TEXT,
+    state TEXT NOT NULL CHECK (state IN ('open','answered','acked')),
+    created_at TEXT NOT NULL,
+    answer_text TEXT,
+    answered_by TEXT,
+    answered_at TEXT,
+    acked_by TEXT,
+    acked_at TEXT
+  );
+  CREATE INDEX idx_attention_state_id ON attention(state, id);
+  CREATE INDEX idx_attention_issue_id ON attention(issue, id);
   `,
 ];
 
@@ -69,6 +96,48 @@ function toEvent(row: EventRow): BusEvent {
   };
 }
 
+interface AttentionRow {
+  id: number;
+  kind: AttentionRecord['kind'];
+  issue: number;
+  repo: string | null;
+  agent_id: string | null;
+  summary: string;
+  options_json: string | null;
+  action_json: string | null;
+  state: AttentionState;
+  created_at: string;
+  answer_text: string | null;
+  answered_by: string | null;
+  answered_at: string | null;
+  acked_by: string | null;
+  acked_at: string | null;
+}
+
+function toAttention(row: AttentionRow): AttentionRecord {
+  return {
+    id: row.id,
+    kind: row.kind,
+    issue: row.issue,
+    repo: row.repo,
+    agentId: row.agent_id,
+    summary: row.summary,
+    options: row.options_json === null ? null : (JSON.parse(row.options_json) as string[]),
+    action:
+      row.action_json === null ? null : (JSON.parse(row.action_json) as Record<string, unknown>),
+    state: row.state,
+    createdAt: row.created_at,
+    answerText: row.answer_text,
+    answeredBy: row.answered_by,
+    answeredAt: row.answered_at,
+    ackedBy: row.acked_by,
+    ackedAt: row.acked_at,
+  };
+}
+
+/** `conflict`: the attention exists but its state does not allow the step. */
+export type AttentionStep = 'ok' | 'not_found' | 'conflict';
+
 export interface Db {
   insertEvent(event: IngestEvent): BusEvent;
   /** Events with an id above `afterId`, oldest first. */
@@ -76,6 +145,15 @@ export interface Db {
   /** Id of the newest event; 0 when the store is empty. */
   newestEventId(): number;
   queryEvents(query: EventQuery): EventPage;
+  /** Stores a new attention in state `open`. */
+  insertAttention(input: CreateAttention): AttentionRecord;
+  getAttention(id: number): AttentionRecord | undefined;
+  /** Matching attentions, oldest first, at most `query.limit`. */
+  listAttention(query: AttentionQuery): AttentionRecord[];
+  /** Compare-and-set `open -> answered`. */
+  answerAttention(id: number, text: string, by: string): AttentionStep;
+  /** Compare-and-set `answered -> acked`. */
+  ackAttention(id: number, by: string | null): AttentionStep;
   /** Runs `fn` in one transaction; a throw rolls everything back. */
   transaction<T>(fn: () => T): T;
   schemaVersion(): number;
@@ -111,7 +189,58 @@ export function openDb(file: string): Db {
   );
   const newestEventId = db.prepare<[], { id: number | null }>('SELECT MAX(id) AS id FROM events');
 
+  const insertAttention = db.prepare(
+    `INSERT INTO attention (kind, issue, repo, agent_id, summary, options_json, action_json, state, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?)`,
+  );
+  const getAttention = db.prepare<[number | bigint], AttentionRow>(
+    'SELECT * FROM attention WHERE id = ?',
+  );
+  const listAttention = db.prepare<(string | number | null)[], AttentionRow>(
+    `SELECT * FROM attention
+     WHERE (? IS NULL OR state = ?) AND (? IS NULL OR kind = ?) AND (? IS NULL OR issue = ?)
+       AND (? IS NULL OR created_at >= ?)
+     ORDER BY id ASC LIMIT ?`,
+  );
+  const answerAttention = db.prepare(
+    `UPDATE attention SET state = 'answered', answer_text = ?, answered_by = ?, answered_at = ?
+     WHERE id = ? AND state = 'open'`,
+  );
+  const ackAttention = db.prepare(
+    `UPDATE attention SET state = 'acked', acked_by = ?, acked_at = ?
+     WHERE id = ? AND state = 'answered'`,
+  );
+  const stepOutcome = (changes: number, id: number): AttentionStep =>
+    changes > 0 ? 'ok' : getAttention.get(id) ? 'conflict' : 'not_found';
+
   return {
+    insertAttention(input) {
+      const info = insertAttention.run(
+        input.kind,
+        input.issue,
+        input.repo ?? null,
+        input.agentId ?? null,
+        input.summary,
+        input.options ? JSON.stringify(input.options) : null,
+        input.action ? JSON.stringify(input.action) : null,
+        new Date().toISOString(),
+      );
+      return toAttention(getAttention.get(info.lastInsertRowid) as AttentionRow);
+    },
+    getAttention(id) {
+      const row = getAttention.get(id);
+      return row ? toAttention(row) : undefined;
+    },
+    listAttention({ state, kind, issue, since, limit }) {
+      const [st, kd, is, si] = [state ?? null, kind ?? null, issue ?? null, since ?? null];
+      return listAttention.all(st, st, kd, kd, is, is, si, si, limit).map(toAttention);
+    },
+    answerAttention(id, text, by) {
+      return stepOutcome(answerAttention.run(text, by, new Date().toISOString(), id).changes, id);
+    },
+    ackAttention(id, by) {
+      return stepOutcome(ackAttention.run(by, new Date().toISOString(), id).changes, id);
+    },
     insertEvent(event) {
       const info = insertEvent.run(
         event.source,

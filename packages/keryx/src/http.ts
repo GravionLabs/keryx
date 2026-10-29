@@ -1,13 +1,23 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import type { z } from 'zod';
+import {
+  AckBodySchema,
+  AnswerBodySchema,
+  type AttentionTransition,
+  ackAttention,
+  answerAttention,
+  CreateAttentionSchema,
+  createAttention,
+  parseAttentionQuery,
+} from './attention.js';
 import { BusEvents } from './bus-events.js';
 import { type BusLog, createBusLog } from './bus-log.js';
 import type { Config } from './config.js';
 import type { Db } from './db.js';
 import { parseEventQuery } from './event-query.js';
 import { createEventStream, createHostGuard } from './event-stream.js';
-import { type IngestEvent, IngestEventSchema } from './events/schema.js';
+import { type BusEvent, type IngestEvent, IngestEventSchema } from './events/schema.js';
 
 export interface HttpOptions {
   config: Config;
@@ -36,6 +46,9 @@ export interface RunningHttp {
 export const MAX_INGEST_BODY_BYTES = 1024 * 1024;
 /** Most events in one `POST /ingest` array; longer arrays get 413. */
 export const MAX_INGEST_BATCH = 100;
+const ATTENTION_ACTION_PATH = /^\/attention\/([^/]+)\/(answer|ack)$/;
+/** Types the bus writes itself; `POST /ingest` refuses them so a producer cannot fake a state change. */
+const SERVER_OWNED_TYPE = /^attention\./;
 /** Body bytes discarded after a 413 before the connection is closed instead. */
 const MAX_DRAIN_BYTES = 8 * MAX_INGEST_BODY_BYTES;
 
@@ -223,6 +236,12 @@ export async function startHttp({
         sendJson(res, 400, { error: `item ${i}: ${briefIssue(checked.error)}` });
         return;
       }
+      if (SERVER_OWNED_TYPE.test(checked.data.type)) {
+        sendJson(res, 403, {
+          error: `item ${i}: ${checked.data.type} is written by the bus (use POST /attention)`,
+        });
+        return;
+      }
       accepted.push(checked.data);
     }
     // Persist first; subscribers are notified only after the commit.
@@ -244,6 +263,124 @@ export async function startHttp({
     sendJson(res, 202, { ids: rows.map((r) => r.id) });
   }
 
+  /** Method, Host/Origin, content-type and size checks of a write route, then the parsed body. */
+  async function readGuardedJson(
+    req: IncomingMessage,
+    res: ServerResponse,
+  ): Promise<{ body: unknown } | undefined> {
+    if (req.method !== 'POST') {
+      sendJson(res, 405, { error: 'method not allowed' });
+    } else if (!hostAllowed(req)) {
+      sendJson(res, 403, { error: 'forbidden host or origin' });
+    } else if (!browserContentTypeAllowed(req)) {
+      sendJson(res, 415, { error: 'content-type must be application/json' });
+    } else if (Number(req.headers['content-length']) > MAX_INGEST_BODY_BYTES) {
+      sendTooLarge(req, res);
+    } else {
+      try {
+        return { body: await readJson(req, MAX_INGEST_BODY_BYTES) };
+      } catch (error) {
+        if (error instanceof PayloadTooLargeError) sendTooLarge(req, res);
+        else sendJson(res, 400, { error: 'invalid JSON body' });
+      }
+    }
+    return undefined;
+  }
+
+  function publish(event: BusEvent): void {
+    try {
+      events.publishEvent(event);
+    } catch (error) {
+      log.logLine('ERROR', `broadcast of event ${event.id} failed: ${String(error)}`);
+    }
+  }
+
+  /** `POST /attention`: stores an open attention and records `attention.created`; 201 with the attention. */
+  async function handleAttentionCreate(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const read = await readGuardedJson(req, res);
+    if (!read) return;
+    const checked = CreateAttentionSchema.safeParse(read.body);
+    if (!checked.success) {
+      sendJson(res, 400, { error: briefIssue(checked.error) });
+      return;
+    }
+    const { attention, event } = createAttention(db, checked.data);
+    publish(event);
+    log.logLine(
+      'ATTENTION',
+      `attention ${attention.id} ${attention.kind} for #${attention.issue} open`,
+    );
+    sendJson(res, 201, attention);
+  }
+
+  /** `GET /attention?state=&kind=&issue=&since=&limit=`: `{ attention: [...] }`, oldest first. */
+  function handleAttentionList(req: IncomingMessage, res: ServerResponse): void {
+    if (req.method !== 'GET') {
+      sendJson(res, 405, { error: 'method not allowed' });
+      return;
+    }
+    if (!hostAllowed(req)) {
+      sendJson(res, 403, { error: 'forbidden host or origin' });
+      return;
+    }
+    const parsed = parseAttentionQuery(new URL(req.url ?? '/', 'http://localhost').searchParams);
+    if ('error' in parsed) {
+      sendJson(res, 400, { error: parsed.error });
+      return;
+    }
+    sendJson(res, 200, { attention: db.listAttention(parsed.query) });
+  }
+
+  /**
+   * `POST /attention/<id>/answer|ack`: compare-and-set transition plus its lifecycle event in one
+   * transaction, published after the commit. 404 for an unknown id, 409 when the state does not
+   * allow the step, 400 for a bad body or an answer outside `options`. `by` is self-asserted: a
+   * label, never an identity (the bus has no authentication, see the guards above).
+   */
+  async function handleAttentionAction(
+    req: IncomingMessage,
+    res: ServerResponse,
+    rawId: string,
+    action: 'answer' | 'ack',
+  ): Promise<void> {
+    const read = await readGuardedJson(req, res);
+    if (!read) return;
+    const id = Number(rawId);
+    if (!/^\d+$/.test(rawId) || !Number.isSafeInteger(id) || id < 1) {
+      sendJson(res, 404, { error: 'attention not found' });
+      return;
+    }
+    let result: AttentionTransition;
+    if (action === 'answer') {
+      const checked = AnswerBodySchema.safeParse(read.body);
+      if (!checked.success) {
+        sendJson(res, 400, { error: briefIssue(checked.error) });
+        return;
+      }
+      result = answerAttention(db, id, checked.data.text, checked.data.by);
+    } else {
+      const checked = AckBodySchema.safeParse(read.body ?? {});
+      if (!checked.success) {
+        sendJson(res, 400, { error: briefIssue(checked.error) });
+        return;
+      }
+      result = ackAttention(db, id, checked.data.by ?? null);
+    }
+    if (result.outcome === 'not_found') {
+      sendJson(res, 404, { error: 'attention not found' });
+    } else if (result.outcome === 'conflict') {
+      sendJson(res, 409, {
+        error: `attention ${id} is ${db.getAttention(id)?.state ?? 'gone'}; cannot ${action}`,
+      });
+    } else if (result.outcome === 'invalid') {
+      sendJson(res, 400, { error: result.error });
+    } else {
+      publish(result.event);
+      log.logLine('ATTENTION', `attention ${id} ${result.attention.state}`);
+      sendJson(res, 200, result.attention);
+    }
+  }
+
   const fail = (res: ServerResponse) => (error: unknown) => {
     if (!res.headersSent) {
       sendJson(res, 500, { error: error instanceof Error ? error.message : 'internal error' });
@@ -258,6 +395,14 @@ export async function startHttp({
       eventStream.handle(req, res).catch(fail(res));
     } else if (path === '/ingest') {
       handleIngest(req, res).catch(fail(res));
+    } else if (path === '/attention') {
+      (req.method === 'POST'
+        ? handleAttentionCreate(req, res)
+        : Promise.resolve().then(() => handleAttentionList(req, res))
+      ).catch(fail(res));
+    } else if (ATTENTION_ACTION_PATH.test(path)) {
+      const [, id = '', action = ''] = ATTENTION_ACTION_PATH.exec(path) ?? [];
+      handleAttentionAction(req, res, id, action === 'ack' ? 'ack' : 'answer').catch(fail(res));
     } else if (path === '/events') {
       Promise.resolve()
         .then(() => handleEventQuery(req, res))

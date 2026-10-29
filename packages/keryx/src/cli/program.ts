@@ -2,6 +2,14 @@ import { Command, CommanderError } from 'commander';
 import { busUrl, ConfigError, loadConfig } from '../config.js';
 import { type RunningServe, reportStartupError, serve } from '../serve.js';
 import { keryxVersion } from '../version.js';
+import {
+  type CreateOptions,
+  type ListOptions,
+  runAttentionAck,
+  runAttentionAnswer,
+  runAttentionCreate,
+  runAttentionList,
+} from './attention.js';
 import { runEventCommand } from './event.js';
 import { runHookCommand } from './hook.js';
 import { InstallError, runInstallClaude } from './install.js';
@@ -62,6 +70,88 @@ export function buildProgram(
         onResult(1);
       }
     });
+
+  const attention = program
+    .command('attention')
+    .description('questions that wait for a human: create, list, answer, ack');
+  const attentionIo = {
+    stdout: (t: string) => process.stdout.write(`${t}\n`),
+    stderr: (t: string) => process.stderr.write(`${t}\n`),
+  };
+  const urlOption = '--url <base>';
+  const urlHelp = 'bus base URL (default KERYX_URL, else host and port from config)';
+  const attentionAction =
+    <A extends unknown[]>(run: (...args: A) => Promise<number>) =>
+    async (...args: A) => {
+      try {
+        onResult(await run(...args));
+      } catch (error) {
+        if (!(error instanceof ConfigError)) throw error;
+        process.stderr.write(`keryx: ${error.message}\n`);
+        onResult(1);
+      }
+    };
+
+  attention
+    .command('create')
+    .description('create an attention and print its id; exits 0 when the bus is not running')
+    .requiredOption('--kind <kind>', 'BLOCKED, APPROVAL or QUESTION')
+    .requiredOption('--issue <nr>', 'issue number')
+    .requiredOption('--summary <text>', 'what the human has to decide')
+    .option('--option <text>', 'an allowed answer (repeatable)', (v, all: string[] = []) => [
+      ...all,
+      v,
+    ])
+    .option('--action <json>', 'data for the consumer, a JSON object, e.g. {"type":"merge","pr":1}')
+    .option('--repo <owner/name>', 'repository')
+    .option('--agent-id <id>', 'agent id')
+    .option(urlOption, urlHelp)
+    .action(
+      attentionAction(async (opts: Omit<CreateOptions, 'url'> & { url?: string }) =>
+        runAttentionCreate({ ...opts, url: opts.url ?? busUrl() }, attentionIo),
+      ),
+    );
+
+  attention
+    .command('list')
+    .description('list attentions, oldest first')
+    .option('--state <state>', 'open, answered or acked')
+    .option('--kind <kind>', 'BLOCKED, APPROVAL or QUESTION')
+    .option('--issue <nr>', 'issue number')
+    .option('--since <iso>', 'created at or after')
+    .option('--limit <n>', 'at most n (default 100)')
+    .option('--json', 'print the JSON array')
+    .option(urlOption, urlHelp)
+    .action(
+      attentionAction(async (opts: Omit<ListOptions, 'url'> & { url?: string }) =>
+        runAttentionList({ ...opts, url: opts.url ?? busUrl() }, attentionIo),
+      ),
+    );
+
+  attention
+    .command('answer')
+    .description('answer an open attention; the text must be one of its options, if it has any')
+    .argument('<id>', 'attention id')
+    .argument('<text>', 'the answer')
+    .option('--by <name>', 'who answers (default: the login name)')
+    .option(urlOption, urlHelp)
+    .action(
+      attentionAction(async (id: string, text: string, opts: { by?: string; url?: string }) =>
+        runAttentionAnswer(id, text, { by: opts.by, url: opts.url ?? busUrl() }, attentionIo),
+      ),
+    );
+
+  attention
+    .command('ack')
+    .description('acknowledge an answered attention')
+    .argument('<id>', 'attention id')
+    .option('--by <name>', 'who acknowledges (default: the login name)')
+    .option(urlOption, urlHelp)
+    .action(
+      attentionAction(async (id: string, opts: { by?: string; url?: string }) =>
+        runAttentionAck(id, { by: opts.by, url: opts.url ?? busUrl() }, attentionIo),
+      ),
+    );
 
   program
     .command('mcp')

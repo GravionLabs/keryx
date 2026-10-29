@@ -7,7 +7,7 @@ import { z } from 'zod';
 export const FORBIDDEN_CHARS =
   /[\p{Cc}\u061C\u200B-\u200F\u2028-\u202E\u2060-\u2064\u2066-\u206F\uFEFF]/u;
 
-const text = (min: number, max: number) =>
+export const text = (min: number, max: number) =>
   z
     .string()
     .min(min)

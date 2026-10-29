@@ -6,6 +6,8 @@ Local event bus for Claude Code and OpenCode sessions. Part of [keryx](https://g
 keryx serve                                  # bus on 127.0.0.1:4778, in the foreground
 keryx install claude                         # register the Claude Code hooks
 keryx event session.idle --issue 4 --data '{"model":"x"}'   # post one event; exit 0 when keryx is not running
+keryx attention create --kind BLOCKED --issue 7 --summary "PBI #7 is blocked" --option retry --option skip   # prints the id
+keryx attention list --state answered --json # a later run reads the answers
 ```
 
 ## Claude Code hooks
@@ -49,9 +51,29 @@ The same by hand, in `settings.json`:
 | `POST /ingest` | one event or an array (max 100, 1 MiB); `202 {"ids":[...]}`. Body: `source`, `type`, optional `agentId`, `issue`, `repo`, `data` (object). `id` and `at` are set by the bus. |
 | `GET /events` | query: `issue`, `repo`, `type`, `source` (comma lists), `agentId`, `since`, `until`, `after`, `limit` (1 to 1000); returns `{events, next}` |
 | `GET /events/stream` | Server-Sent Events; resumes after `Last-Event-ID` (or `?since=`), then live |
+| `POST /attention` | creates an attention, `201` with the record; see [Attention](#attention) |
+| `GET /attention` | query: `state` (`open`, `answered`, `acked`), `kind`, `issue`, `since`, `limit` (1 to 1000); returns `{attention: [...]}`, oldest first |
+| `POST /attention/<id>/answer` | `{"text","by"}`; `200` with the record |
+| `POST /attention/<id>/ack` | `{"by"}` (optional); `200` with the record |
 | `GET /health` | `{"ok":true}` |
 
 The bus listens on loopback only and rejects a `Host` or `Origin` that is not loopback. The event shape is in [`schema/events.schema.json`](schema/events.schema.json) (`pnpm --filter @gravionlabs/keryx run schema` regenerates it).
+
+## Attention
+
+A question that waits for a human, from a run nobody watches. Body of `POST /attention`: `kind` (`BLOCKED`, `APPROVAL`, `QUESTION`), `issue` (positive integer), `summary` (1 to 2000 characters), optional `options` (1 to 16 strings), optional `action` (an object for a consumer, for example `{"type":"merge","pr":123}`), `repo`, `agentId`.
+
+An attention moves `open` -> `answered` -> `acked`; each step records one event with source `keryx` and the issue of the attention: `attention.created`, `attention.answered` (`id`, `text`, `by`), `attention.acked` (`id`, `by`). With `options` the answer must be one of them (`400` otherwise); without, any text up to 4000 characters. `404` for an unknown id, `409` when the state does not allow the step (a second answer, an ack before the answer). `by` is self-asserted, a label and not an identity. `POST /ingest` refuses `attention.*` types with `403`.
+
+```sh
+keryx attention create --kind APPROVAL --issue 12 --summary "Merge the release PR?" \
+  --option merge --option wait --action '{"type":"merge","pr":123}'   # prints the id
+keryx attention list [--state open|answered|acked] [--kind <kind>] [--issue <nr>] [--json]
+keryx attention answer <id> merge [--by jerome]
+keryx attention ack <id> [--by deliver]
+```
+
+`create` exits 0 with a notice on stderr and no id when keryx is not running, so producers never fail on a missing keryx. The other commands exit 1 then.
 
 ## Gates (`keryx mcp`)
 

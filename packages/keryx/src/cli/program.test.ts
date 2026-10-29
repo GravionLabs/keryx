@@ -76,6 +76,59 @@ describe('runCli', () => {
     );
   });
 
+  it('runs create, list, answer and ack against a running bus', async () => {
+    let url = '';
+    await runCli(['serve'], {
+      onServe: (running) => {
+        servers.push(running);
+        url = running.url;
+      },
+    });
+    const out = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const printed = () => out.mock.calls.map((c) => String(c[0]));
+    expect(
+      await runCli([
+        'attention',
+        'create',
+        '--kind',
+        'BLOCKED',
+        '--issue',
+        '7',
+        '--summary',
+        'blocked',
+        '--option',
+        'retry',
+        '--option',
+        'skip',
+        '--url',
+        url,
+      ]),
+    ).toBe(0);
+    expect(printed()).toEqual(['1\n']);
+    expect(await runCli(['attention', 'answer', '1', 'abort', '--url', url])).toBe(1);
+    expect(await runCli(['attention', 'answer', '1', 'skip', '--by', 'jerome', '--url', url])).toBe(
+      0,
+    );
+    expect(await runCli(['attention', 'list', '--state', 'answered', '--json', '--url', url])).toBe(
+      0,
+    );
+    expect(JSON.parse(printed()[1] ?? '')).toMatchObject([
+      { id: 1, state: 'answered', answerText: 'skip', answeredBy: 'jerome' },
+    ]);
+    expect(await runCli(['attention', 'ack', '1', '--url', url])).toBe(0);
+    expect(await runCli(['attention', 'ack', '1', '--url', url])).toBe(1);
+  });
+
+  it('exits 0 with a notice when creating an attention and keryx is not running', async () => {
+    vi.stubEnv('KERYX_URL', 'http://127.0.0.1:1');
+    expect(
+      await runCli(['attention', 'create', '--kind', 'QUESTION', '--issue', '1', '--summary', 's']),
+    ).toBe(0);
+    expect(process.stderr.write).toHaveBeenCalledWith(
+      expect.stringContaining('bus not running at http://127.0.0.1:1'),
+    );
+  });
+
   it('reports an address already in use and exits 1', async () => {
     let port = '';
     await runCli(['serve'], {
