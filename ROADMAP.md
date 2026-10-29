@@ -41,7 +41,7 @@ Release PBI #22. Attentions come from unattended implementation runs only; plann
 | 4 | #16 | waiting sessions: notification and jump key | S | #15 |
 | 5 | #25 | attentions in herdr: notification, jump and answer with options | M | #15, #9, #16 |
 | 6 | #18 | status badge per pane from session and PR events | M | #15, #6, #7, #20 |
-| 7 | #19 | cost per pane through the agentlens CLI (optional) | S | #18 |
+| 7 | #19 | cost per pane through the agentlens CLI (optional) | S | #18, agentlens#437 |
 | 8 | #17 | start `/deliver <nr>` in a new pane | S | #15, apm-hub#826 |
 | last | #22 | release PBI: herdr docs, CHANGELOG, release PR with `github-release` | S | #21, #9, #23, #15, #16, #25, #18 |
 
@@ -66,7 +66,7 @@ Release PBI #22. Attentions come from unattended implementation runs only; plann
 | Hook install (#6) | `keryx install claude`, the JSON block only as documentation |
 | PR and CI state (#18) | events only, posted by `deliver` (`keryx event`) or the gate tools; the herdr plugin never calls `gh` |
 | Attention producers (#9) | `BLOCKED` with `retry`/`skip` from `deliver` (apm-hub#846), `APPROVAL` for the release PR (apm-hub#847, merged by #23), `QUESTION` open (#24) |
-| agentlens (#19) | CLI with JSON output, at most one call per pane every 60 s |
+| agentlens (#19) | CLI with JSON output, at most one call per pane every 60 s; one session through the new filter `agentlens cost --session <id>` (agentlens#437), not by filtering `cost --by session` in keryx |
 
 ## Dependencies on other repositories
 
@@ -75,7 +75,7 @@ Release PBI #22. Attentions come from unattended implementation runs only; plann
 | apm-hub#827 OpenCode orchestrator | waits for 0.1.0 (#12, #20, #13) | planned for apm-hub 3.3.0, else 3.4.0 |
 | apm-hub#826 `deliver` | #17 waits for it; it adds the `gate` key to `.agents/config.json` and posts PR events through `keryx event` | merged on apm-hub `release/next`, ships with 3.3.0 |
 | apm-hub#846, #847 | wait for 0.2.0 (#9, #23) | apm-hub 3.4.0 |
-| agentlens | #19 reads `agentlens cost` | — |
+| agentlens#437 `--session` filter | #19 reads `agentlens cost --session <id> --format json` | planned for agentlens 0.13; #19 moves if it is late |
 | herdr 0.9.5 | #15 verifies the socket protocol and composer input | — |
 
 ## Risks
