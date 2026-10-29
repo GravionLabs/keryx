@@ -276,3 +276,128 @@ describe('maxEventStreams', () => {
     await first.body?.cancel();
   });
 });
+
+describe('attention routes', () => {
+  const create = (over: Record<string, unknown> = {}) =>
+    fetch(`${http.url}/attention`, {
+      method: 'POST',
+      body: JSON.stringify({ kind: 'BLOCKED', issue: 7, summary: 'blocked', ...over }),
+    });
+  const act = (id: number | string, action: string, body: unknown) =>
+    fetch(`${http.url}/attention/${id}/${action}`, { method: 'POST', body: JSON.stringify(body) });
+  const list = async (q = '') =>
+    ((await (await fetch(`${http.url}/attention${q}`)).json()) as { attention: { id: number }[] })
+      .attention;
+
+  it('creates an attention (201) and records attention.created', async () => {
+    const res = await create({ options: ['retry', 'skip'], action: { type: 'merge', pr: 1 } });
+    expect(res.status).toBe(201);
+    expect(await res.json()).toMatchObject({
+      id: 1,
+      state: 'open',
+      kind: 'BLOCKED',
+      issue: 7,
+      options: ['retry', 'skip'],
+      action: { type: 'merge', pr: 1 },
+    });
+    expect(db.listEventsSince(0).map((e) => [e.source, e.type])).toEqual([
+      ['keryx', 'attention.created'],
+    ]);
+  });
+
+  it('answers (200, attention.answered) and acks (200, attention.acked)', async () => {
+    await create({ options: ['retry', 'skip'] });
+    const answered = await act(1, 'answer', { text: 'skip', by: 'jerome' });
+    expect(answered.status).toBe(200);
+    expect(await answered.json()).toMatchObject({
+      state: 'answered',
+      answerText: 'skip',
+      answeredBy: 'jerome',
+    });
+    const acked = await act(1, 'ack', { by: 'deliver' });
+    expect(acked.status).toBe(200);
+    expect(await acked.json()).toMatchObject({ state: 'acked', ackedBy: 'deliver' });
+    expect(db.listEventsSince(0).map((e) => e.type)).toEqual([
+      'attention.created',
+      'attention.answered',
+      'attention.acked',
+    ]);
+  });
+
+  it('acks with an empty body', async () => {
+    await create();
+    await act(1, 'answer', { text: 'ok', by: 'x' });
+    const res = await fetch(`${http.url}/attention/1/ack`, { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ state: 'acked', ackedBy: null });
+  });
+
+  it('refuses an answer outside the options with 400 and keeps the attention open', async () => {
+    await create({ options: ['retry', 'skip'] });
+    const res = await act(1, 'answer', { text: 'abort', by: 'x' });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'answer must be one of: retry, skip' });
+    expect(await list('?state=open')).toHaveLength(1);
+  });
+
+  it('answers 404 for an unknown or malformed id and 409 for a wrong state', async () => {
+    await create();
+    expect((await act(9, 'answer', { text: 'x', by: 'y' })).status).toBe(404);
+    expect((await act('abc', 'ack', {})).status).toBe(404);
+    expect((await act(1, 'ack', {})).status).toBe(409);
+    await act(1, 'answer', { text: 'x', by: 'y' });
+    const again = await act(1, 'answer', { text: 'x', by: 'y' });
+    expect(again.status).toBe(409);
+    expect(await again.json()).toEqual({ error: 'attention 1 is answered; cannot answer' });
+  });
+
+  it('answers 400 for an invalid body', async () => {
+    expect((await create({ kind: 'GATE' })).status).toBe(400);
+    expect((await create({ issue: undefined })).status).toBe(400);
+    await create();
+    expect((await act(1, 'answer', { text: 'x' })).status).toBe(400);
+    expect((await act(1, 'answer', 'nope')).status).toBe(400);
+    const bad = await fetch(`${http.url}/attention`, { method: 'POST', body: '{' });
+    expect(bad.status).toBe(400);
+  });
+
+  it('lists with state, kind and issue filters; a later run reads the answer', async () => {
+    await create({ options: ['retry', 'skip'] });
+    await create({ kind: 'APPROVAL', issue: 8, summary: 'release' });
+    await act(1, 'answer', { text: 'retry', by: 'x' });
+    expect((await list()).map((a) => a.id)).toEqual([1, 2]);
+    expect((await list('?state=open')).map((a) => a.id)).toEqual([2]);
+    expect(await list('?state=answered&kind=BLOCKED')).toMatchObject([
+      { id: 1, answerText: 'retry' },
+    ]);
+    expect((await list('?issue=8')).map((a) => a.id)).toEqual([2]);
+    expect((await fetch(`${http.url}/attention?state=bogus`)).status).toBe(400);
+  });
+
+  it('refuses other methods and ingest of attention events', async () => {
+    expect((await fetch(`${http.url}/attention`, { method: 'DELETE' })).status).toBe(405);
+    expect((await fetch(`${http.url}/attention/1/answer`)).status).toBe(405);
+    expect((await fetch(`${http.url}/attention/1/ack`)).status).toBe(405);
+    for (const type of ['attention.created', 'attention.answered', 'attention.acked']) {
+      expect((await post(event({ type }))).status).toBe(403);
+    }
+    expect(db.listEventsSince(0)).toEqual([]);
+  });
+
+  it('applies the Host and Origin guard and the browser content-type rule', async () => {
+    expect(await raw('/attention', { host: 'evil.example' }, 'POST')).toBe(403);
+    expect(await raw('/attention', { host: 'evil.example' })).toBe(403);
+    expect(await raw('/attention/1/ack', { host: 'evil.example' }, 'POST')).toBe(403);
+    const res = await fetch(`${http.url}/attention`, {
+      method: 'POST',
+      headers: { origin: http.url, 'content-type': 'text/plain' },
+      body: '{}',
+    });
+    expect(res.status).toBe(415);
+  });
+
+  it('answers 413 for a body over the cap', async () => {
+    const res = await create({ summary: 'x'.repeat(MAX_INGEST_BODY_BYTES) });
+    expect(res.status).toBe(413);
+  });
+});

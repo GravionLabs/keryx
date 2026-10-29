@@ -19,7 +19,7 @@ export const MAX_QUERY_LIMIT = 1000;
 
 export type ParsedEventQuery = { query: EventQuery } | { error: string };
 
-function intParam(name: string, value: string): number | string {
+export function intParam(name: string, value: string): number | string {
   const n = Number(value);
   if (!NON_NEGATIVE_INT.test(value) || !Number.isSafeInteger(n)) {
     return `${name} must be a non-negative integer`;
@@ -34,7 +34,7 @@ function listParam(name: string, value: string): string[] | string {
     : items;
 }
 
-function timeParam(name: string, value: string): string | { iso: string } {
+export function timeParam(name: string, value: string): string | { iso: string } {
   const ms = Date.parse(value);
   if (!ISO_PREFIX.test(value) || Number.isNaN(ms)) {
     return `${name} must be an ISO-8601 date-time (YYYY-MM-DDTHH:MM...)`;
@@ -42,10 +42,13 @@ function timeParam(name: string, value: string): string | { iso: string } {
   return { iso: new Date(ms).toISOString() };
 }
 
-function rejectUnknownOrRepeated(params: URLSearchParams): string | undefined {
+export function rejectUnknownOrRepeated(
+  params: URLSearchParams,
+  allowed: ReadonlySet<string> = ALLOWED_KEYS,
+): string | undefined {
   const seen = new Set<string>();
   for (const key of params.keys()) {
-    if (!ALLOWED_KEYS.has(key)) {
+    if (!allowed.has(key)) {
       return `unknown parameter: ${key}`;
     }
     if (seen.has(key)) {
